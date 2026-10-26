@@ -98,35 +98,39 @@ const server = http.createServer((req, res) => {
       output += chunk.toString();
     });
 
+    let responseSent = false;
+
+    const sendJson = (status, payload) => {
+      if (responseSent || res.headersSent || res.destroyed) return;
+
+      responseSent = true;
+      res.writeHead(status);
+      res.end(JSON.stringify(payload));
+    };
+
     child.on("error", (error) => {
       isRunning = false;
 
-      if (!res.headersSent) {
-        res.writeHead(500);
-        res.end(
-          JSON.stringify({
-            ok: false,
-            scenario: data.scenario,
-            error: error.message,
-          }),
-        );
-      }
+      console.error("Failed to start Playwright:", error.message);
+
+      sendJson(500, {
+        ok: false,
+        scenario: data.scenario,
+        error: "Could not start Playwright. Check the runner terminal.",
+      });
     });
 
     child.on("close", (code) => {
       isRunning = false;
 
-      if (res.destroyed) return;
+      if (responseSent || res.destroyed) return;
 
-      res.writeHead(200);
-      res.end(
-        JSON.stringify({
-          ok: code === 0,
-          scenario: data.scenario,
-          exitCode: code,
-          output: output.slice(-15000),
-        }),
-      );
+      sendJson(200, {
+        ok: code === 0,
+        scenario: data.scenario,
+        exitCode: code,
+        output: output.slice(-15000),
+      });
 
       console.log(`Finished ${data.scenario}: exit code ${code}`);
     });
