@@ -345,10 +345,24 @@ test("unassisted buyflow - AutoPay", async ({ page, request }) => {
   await expect(availableDays.first()).toBeVisible();
   const dayCount = await availableDays.count();
   console.log("Available days in this month:", dayCount);
-  await availableDays.nth(randomIndex(dayCount)).click();
+  const dayCell = availableDays.nth(randomIndex(dayCount));
+  const dayLabel = (await dayCell.textContent()).trim(); // e.g. "29"
+  await dayCell.click();
+
+  // The calendar popup can stay open and cover the time slots. In a failed run it
+  // covered the "1 - 3 p.m." slot ("dp__calendar ... intercepts pointer events").
+  // Close it and wait until it is gone before touching the time slots.
+  const calendar = page.getByRole("dialog", { name: "Datepicker menu" });
+  if (await calendar.isVisible()) await page.keyboard.press("Escape");
+  if (await calendar.isVisible()) await page.getByTestId("psch-title").click(); // click outside closes it
+  await expect(calendar).toBeHidden();
 
   await expect(page.locator("#appointment-date")).not.toHaveValue("");
   const installDate = await page.locator("#appointment-date").inputValue();
+  // Report (without stopping the test) if the date shown is not the day we clicked
+  expect
+    .soft(installDate, `install date should be the clicked day (${dayLabel})`)
+    .toMatch(new RegExp(`\\b${dayLabel},`));
   console.log("Selected install date:", installDate);
 
   // Pick a random AVAILABLE time slot

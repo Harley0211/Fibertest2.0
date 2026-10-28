@@ -46,6 +46,45 @@ const randomName = (min = 8, max = 10) => {
   return word.charAt(0).toUpperCase() + word.slice(1);
 };
 
+// Next free email: qatest.auto0001@lotusflare.com, 0002, 0003, ...
+// "Used" = any qatest.autoNNNN email found in the Google Sheet or in the local
+// account-log.csv. Picks the lowest number that is not used yet.
+// If the sheet is configured but cannot be read, the test STOPS instead of
+// guessing an email that might already exist.
+async function getNextEmail(request) {
+  const used = new Set();
+  const collect = (text) => {
+    for (const m of text.matchAll(/qatest\.auto(\d+)@lotusflare\.com/gi)) {
+      used.add(Number(m[1]));
+    }
+  };
+
+  if (SHEET_WEBHOOK_URL) {
+    const res = await request.post(SHEET_WEBHOOK_URL, {
+      data: { secret: SHEET_SECRET, action: "listEmails" },
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok() || !body || body.ok !== true || !Array.isArray(body.emails)) {
+      throw new Error(
+        `Could not read the used emails from the Google Sheet (HTTP ${res.status()}). ` +
+          "Stopping so a duplicate email is not created.",
+      );
+    }
+    collect(body.emails.join("\n"));
+    console.log(`Emails already used in the sheet: ${body.emails.length}`);
+  } else {
+    console.warn("SHEET_WEBHOOK_URL not set - checking local CSV only.");
+  }
+
+  if (fs.existsSync("account-log.csv")) {
+    collect(fs.readFileSync("account-log.csv", "utf8"));
+  }
+
+  let n = 1;
+  while (used.has(n)) n++;
+  return `qatest.auto${String(n).padStart(4, "0")}@lotusflare.com`;
+}
+
 // Same order-summary layout is used on /review and /confirmation.
 // Soft assertions: every mismatch is reported, not just the first.
 async function verifyOrderDetails(page, d, totalTodayLabel) {
@@ -224,7 +263,7 @@ test("unassisted buyflow", async ({ page, request }) => {
 
   const firstName = randomName();
   const lastName = randomName();
-  const email = `qatest.auto${randomDigits(4)}@lotusflare.com`;
+  const email = await getNextEmail(request); // next free qatest.autoNNNN
   console.log("Using:", firstName, lastName, email);
 
   await page.locator("#first-name").fill(firstName);
@@ -267,10 +306,24 @@ test("unassisted buyflow", async ({ page, request }) => {
   await expect(availableDays.first()).toBeVisible();
   const dayCount = await availableDays.count();
   console.log("Available days in this month:", dayCount);
-  await availableDays.nth(randomIndex(dayCount)).click();
+  const dayCell = availableDays.nth(randomIndex(dayCount));
+  const dayLabel = (await dayCell.textContent()).trim(); // e.g. "29"
+  await dayCell.click();
+
+  // The calendar popup can stay open and cover the time slots. In a failed run it
+  // covered the "1 - 3 p.m." slot ("dp__calendar ... intercepts pointer events").
+  // Close it and wait until it is gone before touching the time slots.
+  const calendar = page.getByRole("dialog", { name: "Datepicker menu" });
+  if (await calendar.isVisible()) await page.keyboard.press("Escape");
+  if (await calendar.isVisible()) await page.getByTestId("psch-title").click(); // click outside closes it
+  await expect(calendar).toBeHidden();
 
   await expect(page.locator("#appointment-date")).not.toHaveValue("");
   const installDate = await page.locator("#appointment-date").inputValue();
+  // Report (without stopping the test) if the date shown is not the day we clicked
+  expect
+    .soft(installDate, `install date should be the clicked day (${dayLabel})`)
+    .toMatch(new RegExp(`\\b${dayLabel},`));
   console.log("Selected install date:", installDate);
 
   // Pick a random AVAILABLE time slot
